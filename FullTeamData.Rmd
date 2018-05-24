@@ -1,0 +1,318 @@
+# Matthew Bierman
+# CS 4301.002
+# March Madness Project
+
+## This script creates each fullTeamData files, which contains all aggregated data for each team from every season (2010-2018)
+###### In order to create each fullTeamData file (fullTeamData2010.csv, fullTeamData2011.csv, ..., fullTeamData2018.csv), run the file and set the desired year by changing the value of `currentYear`. For example, `currentYear <- 2018` will create fullTeamData2018.csv. This could have been implemented in a loop that creates every fullTeamData file at once, but you wouldn't be able to see any of the important outputs like `head(fullTeamData)` and `str(fullTeamData)`.
+
+### Set the year for what data to use
+##### (2010-2017 for testing, 2018 for Kaggle submission)
+```{r}
+currentYear <- 2016
+```
+
+### Import libraries
+```{r}
+options(warn=-1)
+library(caret)
+library(SparkR)
+library(dplyr)
+library(magrittr)
+library(tidyr)
+```
+
+### Load Apache Spark
+```{r}
+sparkR.session()
+sc <- sparkR.init(master = "local")
+```
+
+### Import datasets
+```{r}
+# Import regular season data
+RegularSeasonDetailedResults <- read.df(path = "Data/RegularSeasonDetailedResults.csv", source = "csv", header = "true")
+RegularSeasonDetailedResults <- as.data.frame(RegularSeasonDetailedResults)
+RegularSeasonDetailedResults[, c(1:6, 8:34)] <- sapply(RegularSeasonDetailedResults[, c(1:6, 8:34)], as.numeric)
+head(RegularSeasonDetailedResults)
+
+# Import submission file
+test <- read.df(path = "Data/SampleSubmissionStage2.csv", source = "csv", header = "true")
+test <- as.data.frame(test)
+test[, c(2)] <- sapply(test[, c(2)], as.numeric)
+head(test)
+
+# Import team data
+Teams <- read.df(path = "Data/Teams.csv", source = "csv", header = "true")
+Teams <- as.data.frame(Teams)
+Teams[, c(1, 3:4)] <- sapply(Teams[, c(1, 3:4)], as.numeric)
+head(Teams)
+
+# Import coaches data
+Coaches <- read.df(path = "Data/TeamCoaches.csv", source = "csv", header = "true")
+Coaches <- as.data.frame(Coaches)
+Coaches[, c(1:4)] <- sapply(Coaches[, c(1:4)], as.numeric)
+head(Coaches)
+
+# Import conferences data
+Conferences <- read.df(path = "Data/TeamConferences.csv", source = "csv", header = "true")
+Conferences <- as.data.frame(Conferences)
+Conferences[, c(1:2)] <- sapply(Conferences[, c(1:2)], as.numeric)
+head(Conferences)
+
+# Import conferences (full names) data
+ConferencesFullNames <- read.df(path = "Data/Conferences.csv", source = "csv", header = "true")
+ConferencesFullNames <- as.data.frame(ConferencesFullNames)
+head(ConferencesFullNames)
+
+# Import seed data
+Seeds <- read.df(path = "Data/NCAATourneySeeds.csv", source = "csv", header = "true")
+Seeds <- as.data.frame(Seeds)
+Seeds[, c(1, 3)] <- sapply(Seeds[, c(1, 3)], as.numeric)
+head(Seeds)
+```
+
+### Prepare datasets for merging with fullTeamData dataset
+##### fullTeamData has all data for each team for that year
+```{r}
+# Remove DayNum column from RegularSeasonDetailedResults dataset
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(2)]
+
+# Convert Seed column in Seeds dataset into an integer (and without conference prefix)
+Seeds$Seed <- as.integer(substr(Seeds$Seed, 2, 3))
+Seeds <- Seeds[Seeds$Season == currentYear, ]
+head(Seeds)
+
+# In training, we have to assume we don't know if the coach will continue to coach for the same team in future years, so remove all rows with a Season that's not the current year or earlier
+Coaches <- Coaches[Coaches$Season <= currentYear, ]
+
+# Remove rows where the coach was replaced before the end of the season
+Coaches <- Coaches[Coaches$LastDayNum == 77 | Coaches$LastDayNum == 154, ]
+
+# Create countTotalYears dataset with TotalYears column
+countTotalYears <- Coaches
+countTotalYears$TotalYears <- 1
+countTotalYears <- countTotalYears[order(countTotalYears$TeamID), c(5, 6)]
+countTotalYears <- as.data.frame(countTotalYears %>% group_by(CoachName) %>% summarise(sum(TotalYears)))
+head(countTotalYears)
+
+# Create countUnivYears dataset with TotalYears column
+countUnivYears <- Coaches[order(Coaches$TeamID), c(2, 5)]
+countUnivYears$TotalYears <- 1
+countUnivYears <- as.data.frame(countUnivYears %>% group_by(TeamID, CoachName) %>% summarise(sum(TotalYears)))
+head(countUnivYears)
+
+# Create NumWins dataset with Wins and WinsOT columns
+RegularSeasonDetailedResults$numWins <- 1
+NumWins <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear, c(2, 7, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumWins$NumOT <- ifelse(NumWins$NumOT > 0, 1, 0)
+NumWins <- as.data.frame(NumWins %>% group_by(WTeamID) %>% summarise(sum(NumOT), sum(numWins)))
+NumWins <- NumWins[, c(1, 3, 2)] %>% set_colnames(c("TeamID", "Wins", "WinsOT"))
+head(NumWins)
+
+# Create NumLosses dataset with Losses and LossesOT columns
+RegularSeasonDetailedResults$numLosses <- 1
+NumLosses <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear, c(4, 7, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumLosses$NumOT <- ifelse(NumLosses$NumOT > 0, 1, 0)
+NumLosses <- as.data.frame(NumLosses %>% group_by(LTeamID) %>% summarise(sum(NumOT), sum(numLosses)))
+NumLosses <- NumLosses[, c(1, 3, 2)] %>% set_colnames(c("TeamID", "Losses", "LossesOT"))
+head(NumLosses)
+
+# Create NumHomeWins dataset with HomeWins column
+RegularSeasonDetailedResults$numHomeWins <- 1
+NumHomeWins <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear & RegularSeasonDetailedResults$WLoc == "H", c(2, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumHomeWins <- as.data.frame(NumHomeWins %>% group_by(WTeamID) %>% summarise(sum(numHomeWins)))
+NumHomeWins <- NumHomeWins %>% set_colnames(c("TeamID", "HomeWins"))
+head(NumHomeWins)
+
+# Create NumHomeLosses dataset with HomeLosses column
+RegularSeasonDetailedResults$numHomeLosses <- 1
+NumHomeLosses <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear & RegularSeasonDetailedResults$WLoc == "H", c(4, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumHomeLosses <- as.data.frame(NumHomeLosses %>% group_by(LTeamID) %>% summarise(sum(numHomeLosses)))
+NumHomeLosses <- NumHomeLosses %>% set_colnames(c("TeamID", "HomeLosses"))
+head(NumHomeLosses)
+
+# Create NumAwayWins dataset with AwayWins column
+RegularSeasonDetailedResults$numAwayWins <- 1
+NumAwayWins <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear & RegularSeasonDetailedResults$WLoc == "A", c(2, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumAwayWins <- as.data.frame(NumAwayWins %>% group_by(WTeamID) %>% summarise(sum(numAwayWins)))
+NumAwayWins <- NumAwayWins %>% set_colnames(c("TeamID", "AwayWins"))
+head(NumAwayWins)
+
+# Create NumAwayLosses dataset with AwayLosses column
+RegularSeasonDetailedResults$numAwayLosses <- 1
+NumAwayLosses <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear & RegularSeasonDetailedResults$WLoc == "A", c(4, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumAwayLosses <- as.data.frame(NumAwayLosses %>% group_by(LTeamID) %>% summarise(sum(numAwayLosses)))
+NumAwayLosses <- NumAwayLosses %>% set_colnames(c("TeamID", "AwayLosses"))
+head(NumAwayLosses)
+
+# Create NumNeutralWins dataset with NeutralWins column
+RegularSeasonDetailedResults$numNeutralWins <- 1
+NumNeutralWins <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear & RegularSeasonDetailedResults$WLoc == "N", c(2, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumNeutralWins <- as.data.frame(NumNeutralWins %>% group_by(WTeamID) %>% summarise(sum(numNeutralWins)))
+NumNeutralWins <- NumNeutralWins %>% set_colnames(c("TeamID", "NeutralWins"))
+head(NumNeutralWins)
+
+# Create NumNeutralLosses dataset with NeutralLosses column
+RegularSeasonDetailedResults$numNeutralLosses <- 1
+NumNeutralLosses <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear & RegularSeasonDetailedResults$WLoc == "N", c(4, 34)]
+RegularSeasonDetailedResults <- RegularSeasonDetailedResults[, -c(34)]
+NumNeutralLosses <- as.data.frame(NumNeutralLosses %>% group_by(LTeamID) %>% summarise(sum(numNeutralLosses)))
+NumNeutralLosses <- NumNeutralLosses %>% set_colnames(c("TeamID", "NeutralLosses"))
+head(NumNeutralLosses)
+
+# Rearrange RegularSeasonDetailedResults dataset so that it only shows one team per row instead of two teams
+RegularSeasonDetailedResults_OneTeam_1 <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear, c(1:3, 8:20)]
+RegularSeasonDetailedResults_OneTeam_1 <- RegularSeasonDetailedResults_OneTeam_1 %>% set_colnames(c("Season", "TeamID", "Score", "FGM", "FGA", "FGM3", "FGA3", "FTM", "FTA", "OR", "DR", "Ast", "TO", "Stl", "Blk", "PF"))
+RegularSeasonDetailedResults_OneTeam_2 <- RegularSeasonDetailedResults[RegularSeasonDetailedResults$Season == currentYear, c(1, 4:5, 21:33)]
+RegularSeasonDetailedResults_OneTeam_2 <- RegularSeasonDetailedResults_OneTeam_2 %>% set_colnames(c("Season", "TeamID", "Score", "FGM", "FGA", "FGM3", "FGA3", "FTM", "FTA", "OR", "DR", "Ast", "TO", "Stl", "Blk", "PF"))
+RegularSeasonDetailedResults_OneTeam <- rbind(RegularSeasonDetailedResults_OneTeam_1, RegularSeasonDetailedResults_OneTeam_2)
+
+# Create RegularSeasonDetailedResults_OneTeam dataset with data from RegularSeasonDetailedResults dataset plus FGM2 and FGA2 columns
+# FGM2 = 2-pt field goals made
+# FGA2 = 2-pt field goals attempted
+RegularSeasonDetailedResults_OneTeam$FGM2 <- RegularSeasonDetailedResults_OneTeam$FGM - RegularSeasonDetailedResults_OneTeam$FGM3
+RegularSeasonDetailedResults_OneTeam$FGA2 <- RegularSeasonDetailedResults_OneTeam$FGA - RegularSeasonDetailedResults_OneTeam$FGA3
+RegularSeasonDetailedResults_OneTeam <- RegularSeasonDetailedResults_OneTeam[, c(2:5, 17:18, 6:16)]
+head(RegularSeasonDetailedResults_OneTeam)
+
+# Create Avgs dataset with AvgScore, AvgFGM, AvgFGA, AvgFGM2, AvgFGA2, AvgFGM3, AvgFGA3, AvgFTM, AvgFTA, AvgOR, AvgDR, AvgAst, AvgTO, AvgStl, AvgBlk, AvgPF
+Avgs <- as.data.frame(RegularSeasonDetailedResults_OneTeam %>% group_by(TeamID) %>% summarise(mean(Score), mean(FGM), mean(FGA), mean(FGM2), mean(FGA2), mean(FGM3), mean(FGA3), mean(FTM), mean(FTA), mean(OR), mean(DR), mean(Ast), mean(TO), mean(Stl), mean(Blk), mean(PF)))
+Avgs <- Avgs %>% set_colnames(c("TeamID", "AvgScore", "AvgFGM", "AvgFGA", "AvgFGM2", "AvgFGA2", "AvgFGM3", "AvgFGA3", "AvgFTM", "AvgFTA", "AvgOR", "AvgDR", "AvgAst", "AvgTO", "AvgStl", "AvgBlk", "AvgPF"))
+head(Avgs)
+```
+
+### Create fullTeamData dataset for all team information
+* TeamID = unique ID number of team
+* TeamName = name of team
+* ConfAbbrev = name of conference team is in (abbreviation)
+* ConfFullName = name of conference team is in (full name)
+* CoachName = name of coach
+* TotalCoachYears = number of years the coach has been a coach for any team
+* TotalCurrYears = number of years the coach has been a coach for his current team
+* Seed = ranking of the team (1 through 16, 20 if unranked)
+* Wins = number of wins in regular season (Number of wins = number of OT wins + number of non-OT wins)
+* WinsOT = number of wins in overtime in regular season
+* Losses = number of losses in regular season (Number of losses = number of OT losses + number of non-OT losses)
+* LossesOT = number of losses in overtime in regular season
+* HomeWins = number of wins at home in regular season
+* HomeLosses = number of losses at home in regular season
+* AwayWins = number of wins at away in regular season
+* AwayLosses = number of losses at away in regular season
+* NeutralWins = number of wins at neutral in regular season
+* NeutralLosses = number of losses at neutral in regular season
+* NeutralWinsPct = percentage of neutral wins = neutral wins / overall wins
+* NeutralLossesPct = percentage of neutral losses = neutral losses / overall losses
+* AvgScore = average points scored
+* AvgFGM = average field goals made
+* AvgFGA = average field goals attempted
+* AvgFGM2 = average 2-pt field goals made (AvgFGM2 = AvgFGM - AvgFGM3)
+* AvgFGA2 = average 2-pt field goals attempted (AvgFGA2 = AvgFGA - AvgFGA3)
+* AvgFGM3 = average 3-pt field goals made
+* AvgFGA3 = average 3-pt field goals attempted
+* AvgFTM = average free throws made
+* AvgFTA = average free throws attempted
+* AvgOR = average offensive rebounds
+* AvgDR = average defensive rebounds
+* AvgAst = average assists
+* AvgTO = average turnovers
+* AvgStl = average steals
+* AvgBlk = average blocks
+* AvgPF = average personal fouls committed
+
+```{r}
+fullTeamData <- test
+head(fullTeamData)
+
+# Create dataframe with all possible teams (ID and TeamName)
+fullTeamData <- Teams[, c(1, 2)]
+
+# Add coaches to fullTeamData
+fullTeamData <- merge(fullTeamData, Coaches, by = c("TeamID"), sort = F)
+fullTeamData <- fullTeamData[fullTeamData$Season == currentYear, -c(3:5)]
+
+# Add conferences to fullTeamData
+fullTeamData <- merge(fullTeamData, Conferences, by = c("TeamID"), sort = F)
+fullTeamData <- fullTeamData[fullTeamData$Season == currentYear, -c(4)]
+
+# Add conferences (full names) to fullTeamData
+fullTeamData <- merge(fullTeamData, ConferencesFullNames, by = c("ConfAbbrev"))
+fullTeamData <- fullTeamData[order(fullTeamData$TeamID), c(2, 3, 4, 1, 5)]
+
+# Add Seed to fullTeamData
+fullTeamData <- merge(fullTeamData, Seeds, by = c("TeamID"), all = TRUE)
+fullTeamData <- fullTeamData[, -c(6)]
+
+# Add countTotalYears to fullTeamData
+fullTeamData <- merge(fullTeamData, countTotalYears, by = c("CoachName"))
+
+# Add CurrCoachYears to fullTeamData
+fullTeamData <- merge(fullTeamData, countUnivYears, by = c("CoachName", "TeamID"))
+
+# Add Wins and WinsOT to fullTeamData
+fullTeamData <- merge(fullTeamData, NumWins, by = c("TeamID"), all = TRUE)
+
+# Add Losses and LossesOT to fullTeamData
+fullTeamData <- merge(fullTeamData, NumLosses, by = c("TeamID"), all = TRUE)
+
+# Add HomeWins to fullTeamData
+fullTeamData <- merge(fullTeamData, NumHomeWins, by = c("TeamID"), all = TRUE)
+
+# Add HomeLosses to fullTeamData
+fullTeamData <- merge(fullTeamData, NumHomeLosses, by = c("TeamID"), all = TRUE)
+
+# Add AwayWins to fullTeamData
+fullTeamData <- merge(fullTeamData, NumAwayWins, by = c("TeamID"), all = TRUE)
+
+# Add AwayLosses to fullTeamData
+fullTeamData <- merge(fullTeamData, NumAwayLosses, by = c("TeamID"), all = TRUE)
+
+# Add NeutralWins to fullTeamData
+fullTeamData <- merge(fullTeamData, NumNeutralWins, by = c("TeamID"), all = TRUE)
+
+# Add NeutralLosses to fullTeamData
+fullTeamData <- merge(fullTeamData, NumNeutralLosses, by = c("TeamID"), all = TRUE)
+
+# Add NeutralWinsPct and NeutralLossesPct to fullTeamData
+fullTeamData$NeutralWinsPct <- fullTeamData$NeutralWins / fullTeamData$Wins
+fullTeamData$NeutralLossesPct <-  fullTeamData$NeutralLosses / fullTeamData$Losses
+
+# Add AvgScore, AvgFGM, AvgFGA, AvgFGM2, AvgFGA2, AvgFGM3, AvgFGA3, AvgFTM, AvgFTA, AvgOR, AvgDR, AvgAst, AvgTO, AvgStl, AvgBlk, and AvgPF to fullTeamData
+fullTeamData <- merge(fullTeamData, Avgs, by = c("TeamID"))
+
+# This shows the number of NA's per column
+# 287 NA's in Seed
+# 1 NA in HomeWins
+# 8 NA's in AwayWins
+# 5 NA's in AwayLosses
+# 103 NA's in NeutralWins
+# 103 NA's in NeutralWinsPct
+# 48 NA's in NeutralLosses
+# 48 NA's in NeutralLossesPct
+summary(fullTeamData)
+
+# Replace all NA's with 0 for all columns
+fullTeamData[is.na(fullTeamData)] <- 0
+
+# Replace all 0's with 20 in the Seed column, since 0 means unseeded and an unseeded team is not better than a #1 seed team
+fullTeamData[fullTeamData$Seed == 0, c("Seed")] <- 20
+
+# Fix column names and reorder columns
+fullTeamData <- fullTeamData[order(fullTeamData$TeamID), c(1, 3:5, 2, 7:8, 6, 9:36)]
+fullTeamData <- fullTeamData %>% set_colnames(c("TeamID", "TeamName", "ConfAbbrev", "ConfFullName", "CoachName", "TotalCoachYears", "CurrCoachYears", "Seed", "Wins", "WinsOT", "Losses", "LossesOT", "HomeWins", "HomeLosses", "AwayWins", "AwayLosses", "NeutralWins", "NeutralLosses", "NeutralWinsPct", "NeutralLossesPct", "AvgScore", "AvgFGM", "AvgFGA", "AvgFGM2", "AvgFGA2", "AvgFGM3", "AvgFGA3", "AvgFTM", "AvgFTA", "AvgOR", "AvgDR", "AvgAst", "AvgTO", "AvgStl", "AvgBlk", "AvgPF"))
+
+# Display all data
+str(fullTeamData)
+```
+
+### Export fullTeamData dataset to fullTeamData[Year].csv
+```{r}
+fileName <- paste("Data/fullTeamData", currentYear, ".csv", sep = "")
+write.csv(fullTeamData, file = fileName, row.names = FALSE)
+```

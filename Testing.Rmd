@@ -1,0 +1,1731 @@
+# Matthew Bierman
+# CS 4301.002
+# March Madness Project
+
+## This script tests different algorithms, feature selection techniques, and etc. to determine what should be used when predicting for the Kaggle competition
+###### In order to reduce the amount of code in this script, I created a loop that iterates through each year (2010-2017) and stores all results, which will be displayed at the end of the script. Inside the loop, any lines that created an output were removed, since it will not be shown when the script is knitted. To see the outputs, view the Submission script, which uses the same code except with lines that display the outputs.
+
+### Import libraries
+```{r}
+options(warn=-1)
+library(caret)
+library(SparkR)
+library(dplyr)
+library(magrittr)
+library(tidyr)
+library(ggplot2)
+```
+
+### Load Apache Spark
+```{r}
+sparkR.session()
+sc <- sparkR.init(master = "local")
+```
+
+### Import datasets
+```{r}
+# Import full team data for 2010
+fullTeamData2010 <- read.df(path = "Data/fullTeamData2010.csv", source = "csv", header = "true")
+fullTeamData2010 <- as.data.frame(fullTeamData2010)
+head(fullTeamData2010)
+
+# Import full team data for 2011
+fullTeamData2011 <- read.df(path = "Data/fullTeamData2011.csv", source = "csv", header = "true")
+fullTeamData2011 <- as.data.frame(fullTeamData2011)
+
+# Import full team data for 2012
+fullTeamData2012 <- read.df(path = "Data/fullTeamData2012.csv", source = "csv", header = "true")
+fullTeamData2012 <- as.data.frame(fullTeamData2012)
+
+# Import full team data for 2013
+fullTeamData2013 <- read.df(path = "Data/fullTeamData2013.csv", source = "csv", header = "true")
+fullTeamData2013 <- as.data.frame(fullTeamData2013)
+
+# Import full team data for 2014
+fullTeamData2014 <- read.df(path = "Data/fullTeamData2014.csv", source = "csv", header = "true")
+fullTeamData2014 <- as.data.frame(fullTeamData2014)
+
+# Import full team data for 2015
+fullTeamData2015 <- read.df(path = "Data/fullTeamData2015.csv", source = "csv", header = "true")
+fullTeamData2015 <- as.data.frame(fullTeamData2015)
+
+# Import full team data for 2016
+fullTeamData2016 <- read.df(path = "Data/fullTeamData2016.csv", source = "csv", header = "true")
+fullTeamData2016 <- as.data.frame(fullTeamData2016)
+
+# Import full team data for 2017
+fullTeamData2017 <- read.df(path = "Data/fullTeamData2017.csv", source = "csv", header = "true")
+fullTeamData2017 <- as.data.frame(fullTeamData2017)
+```
+
+### Create train and test datasets for each year 2010-2017
+```{r}
+### Create empty datasets that will be used for later
+train_2010 <- 0
+train_2011 <- 0
+train_2012 <- 0
+train_2013 <- 0
+train_2014 <- 0
+train_2015 <- 0
+train_2016 <- 0
+train_2017 <- 0
+test_2010 <- 0
+test_2011 <- 0
+test_2012 <- 0
+test_2013 <- 0
+test_2014 <- 0
+test_2015 <- 0
+test_2016 <- 0
+test_2017 <- 0
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+for (i in 2010:2017) {
+  ### Set the year for what data to use
+  ##### (2010-2017 for testing, 2018 for Kaggle submission)
+  
+  currentYear <- i
+  
+  # ----------------------------------------------------------------------------------------------------------- #
+  # ----------------------------------------------------------------------------------------------------------- #
+  
+  ### Create train dataset
+  ##### Train = regular season
+  
+  # Submission file has ID in the form of Year_Team1ID_Team2ID, Result is 1 if Team1 wins, 0 if Team2 wins
+  # Create ID for each game, where train_1 has all Team1's winning and train_2 has all Team2's winning
+  train <- read.df(path = "Data/RegularSeasonCompactResults.csv", source = "csv", header = "true")
+  train <- as.data.frame(train)
+  train_1 <- train[, c(1, 3, 5)]
+  train_1$ID <- paste(train_1$Season, train_1$WTeamID, train_1$LTeamID, sep = "_")
+  train_1$Result <- 1
+  train_2 <- train[, c(1, 3, 5)]
+  train_2$ID <- paste(train_2$Season, train_2$LTeamID, train_2$WTeamID, sep = "_")
+  train_2$Result <- 0
+  
+  # Combine train_1 and train_2 into train, which has every game played from that season with both Team ID's and the result
+  train <- rbind(train_1, train_2)
+  train <- train[train$Season == currentYear, ]
+  train <- train[order(train$ID), ]
+  train$WTeamID <- as.integer(substr(train$ID, 6, 9))
+  train$LTeamID <- as.integer(substr(train$ID, 11, 14))
+  train <- train %>% set_colnames(c("Season", "TeamID.x", "TeamID.y", "ID", "Result"))
+  
+  # Add team data from fullTeamData to each team in train dataset
+  fullTeamData_2 <- fullTeamData2017
+  colnames(fullTeamData_2)[1] <- "TeamID.x"
+  train <- merge(train, fullTeamData_2, by = c("TeamID.x"))
+  colnames(fullTeamData_2)[1] <- "TeamID.y"
+  train <- merge(train, fullTeamData_2, by = c("TeamID.y"))
+  train <- train[order(train$ID), ]
+  train[, c(1:3, 5, 10:40, 45:75)] <- sapply(train[, c(1:3, 5, 10:40, 45:75)], as.numeric)
+  
+  # ----------------------------------------------------------------------------------------------------------- #
+  # ----------------------------------------------------------------------------------------------------------- #
+  
+  ### Create test dataset
+  ##### Test = March Madness postseason tournament
+  
+  # Get the winning and losing team's ID and the game's result
+  test <- read.df(path = "Data/NCAATourneyCompactResults.csv", source = "csv", header = "true")
+  test <- as.data.frame(test)
+  test_1 <- test[, c(1, 3, 5)]
+  test_1$ID <- paste(test_1$Season, test_1$WTeamID, test_1$LTeamID, sep = "_")
+  test_1$Result <- 1
+  test_2 <- test[, c(1, 3, 5)]
+  test_2$ID <- paste(test_2$Season, test_2$LTeamID, test_2$WTeamID, sep = "_")
+  test_2$Result <- 0
+  test <- rbind(test_1, test_2)
+  test <- test[test$Season == currentYear, ]
+  test <- test[order(test$ID), ]
+  test$WTeamID <- as.integer(substr(test$ID, 6, 9))
+  test$LTeamID <- as.integer(substr(test$ID, 11, 14))
+  test <- test %>% set_colnames(c("Season", "TeamID.x", "TeamID.y", "ID", "Result"))
+  
+  # Merge fullTeamData with test set
+  fullTeamData_2 <- fullTeamData2017
+  colnames(fullTeamData_2)[1] <- "TeamID.x"
+  test <- merge(test, fullTeamData_2, by = c("TeamID.x"))
+  colnames(fullTeamData_2)[1] <- "TeamID.y"
+  test <- merge(test, fullTeamData_2, by = c("TeamID.y"))
+  test <- test[order(test$ID), ]
+  test[, c(1:3, 5, 10:40, 45:75)] <- sapply(test[, c(1:3, 5, 10:40, 45:75)], as.numeric)
+  
+  # ----------------------------------------------------------------------------------------------------------- #
+  # ----------------------------------------------------------------------------------------------------------- #
+  
+  ### Create Diff columns for each feature for both train and test datasets
+  
+  # Add SeedDiff column to both datasets
+  train$SeedDiff <- train$Seed.x - train$Seed.y
+  test$SeedDiff <- test$Seed.x - test$Seed.y
+  
+  # Add TotalCoachYearsDiff column to both datasets
+  train$TotalCoachYearsDiff <- train$TotalCoachYears.x - train$TotalCoachYears.y
+  test$TotalCoachYearsDiff <- test$TotalCoachYears.x - test$TotalCoachYears.y
+  
+  # Add CurrCoachYearsDiff column to both datasets
+  train$CurrCoachYearsDiff <- train$CurrCoachYears.x - train$CurrCoachYears.y
+  test$CurrCoachYearsDiff <- test$CurrCoachYears.x - test$CurrCoachYears.y
+  
+  # Add WinsDiff column to both datasets
+  train$WinsDiff <- train$Wins.x - train$Wins.y
+  test$WinsDiff <- test$Wins.x - test$Wins.y
+  
+  # Add LossesDiff column to both datasets
+  train$LossesDiff <- train$Losses.x - train$Losses.y
+  test$LossesDiff <- test$Losses.x - test$Losses.y
+  
+  # Add NeutralWinsDiff column to both datasets
+  train$NeutralWinsDiff <- train$NeutralWins.x - train$NeutralWins.y
+  test$NeutralWinsDiff <- test$NeutralWins.x - test$NeutralWins.y
+  
+  # Add NeutralLossesDiff column to both datasets
+  train$NeutralLossesDiff <- train$NeutralLosses.x - train$NeutralLosses.y
+  test$NeutralLossesDiff <- test$NeutralLosses.x - test$NeutralLosses.y
+  
+  # Add NeutralWinsPctDiff column to both datasets
+  train$NeutralWinsPctDiff <- train$NeutralWinsPct.x - train$NeutralWinsPct.y
+  test$NeutralWinsPctDiff <- test$NeutralWinsPct.x - test$NeutralWinsPct.y
+  
+  # Add NeutralLossesPctDiff column to both datasets
+  train$NeutralLossesPctDiff <- train$NeutralLossesPct.x - train$NeutralLossesPct.y
+  test$NeutralLossesPctDiff <- test$NeutralLossesPct.x - test$NeutralLossesPct.y
+  
+  # Add AvgScoreDiff column to both datasets
+  train$AvgScoreDiff <- train$AvgScore.x - train$AvgScore.y
+  test$AvgScoreDiff <- test$AvgScore.x - test$AvgScore.y
+  
+  # Add AvgFGMDiff column to both datasets
+  train$AvgFGMDiff <- train$AvgFGM.x - train$AvgFGM.y
+  test$AvgFGMDiff <- test$AvgFGM.x - test$AvgFGM.y
+  
+  # Add AvgFGADiff column to both datasets
+  train$AvgFGADiff <- train$AvgFGA.x - train$AvgFGA.y
+  test$AvgFGADiff <- test$AvgFGA.x - test$AvgFGA.y
+  
+  # Add AvgFGM2Diff column to both datasets
+  train$AvgFGM2Diff <- train$AvgFGM2.x - train$AvgFGM2.y
+  test$AvgFGM2Diff <- test$AvgFGM2.x - test$AvgFGM2.y
+  
+  # Add AvgFGA2Diff column to both datasets
+  train$AvgFGA2Diff <- train$AvgFGA2.x - train$AvgFGA2.y
+  test$AvgFGA2Diff <- test$AvgFGA2.x - test$AvgFGA2.y
+  
+  # Add AvgFGM3Diff column to both datasets
+  train$AvgFGM3Diff <- train$AvgFGM3.x - train$AvgFGM3.y
+  test$AvgFGM3Diff <- test$AvgFGM3.x - test$AvgFGM3.y
+  
+  # Add AvgFGA3Diff column to both datasets
+  train$AvgFGA3Diff <- train$AvgFGA3.x - train$AvgFGA3.y
+  test$AvgFGA3Diff <- test$AvgFGA3.x - test$AvgFGA3.y
+  
+  # Add AvgFTMDiff column to both datasets
+  train$AvgFTMDiff <- train$AvgFTM.x - train$AvgFTM.y
+  test$AvgFTMDiff <- test$AvgFTM.x - test$AvgFTM.y
+  
+  # Add AvgFTADiff column to both datasets
+  train$AvgFTADiff <- train$AvgFTA.x - train$AvgFTA.y
+  test$AvgFTADiff <- test$AvgFTA.x - test$AvgFTA.y
+  
+  # Add AvgORDiff column to both datasets
+  train$AvgORDiff <- train$AvgOR.x - train$AvgOR.y
+  test$AvgORDiff <- test$AvgOR.x - test$AvgOR.y
+  
+  # Add AvgDRDiff column to both datasets
+  train$AvgDRDiff <- train$AvgDR.x - train$AvgDR.y
+  test$AvgDRDiff <- test$AvgDR.x - test$AvgDR.y
+  
+  # Add AvgAstDiff column to both datasets
+  train$AvgAstDiff <- train$AvgAst.x - train$AvgAst.y
+  test$AvgAstDiff <- test$AvgAst.x - test$AvgAst.y
+  
+  # Add AvgTODiff column to both datasets
+  train$AvgTODiff <- train$AvgTO.x - train$AvgTO.y
+  test$AvgTODiff <- test$AvgTO.x - test$AvgTO.y
+  
+  # Add AvgStlDiff column to both datasets
+  train$AvgStlDiff <- train$AvgStl.x - train$AvgStl.y
+  test$AvgStlDiff <- test$AvgStl.x - test$AvgStl.y
+  
+  # Add AvgBlkDiff column to both datasets
+  train$AvgBlkDiff <- train$AvgBlk.x - train$AvgBlk.y
+  test$AvgBlkDiff <- test$AvgBlk.x - test$AvgBlk.y
+  
+  # Add AvgPFDiff column to both datasets
+  train$AvgPFDiff <- train$AvgPF.x - train$AvgPF.y
+  test$AvgPFDiff <- test$AvgPF.x - test$AvgPF.y
+  
+  # Remove .x and .y columns (will be using Diff columns for Logistic Regression)
+  train <- train[, c(4, 5, 76:100, 6, 41)]
+  test <- test[, c(4, 5, 76:100, 6, 41)]
+
+  # ----------------------------------------------------------------------------------------------------------- #
+  # ----------------------------------------------------------------------------------------------------------- #
+  
+  ### Store each test and train dataset for algorithm selection later
+  if (currentYear == 2010) {
+    train_2010 <- train
+    test_2010 <- test
+  } else if (currentYear == 2011) {
+    train_2011 <- train
+    test_2011 <- test
+  } else if (currentYear == 2012) {
+    train_2012 <- train
+    test_2012 <- test
+  } else if (currentYear == 2013) {
+    train_2013 <- train
+    test_2013 <- test
+  } else if (currentYear == 2014) {
+    train_2014 <- train
+    test_2014 <- test
+  } else if (currentYear == 2015) {
+    train_2015 <- train
+    test_2015 <- test
+  } else if (currentYear == 2016) {
+    train_2016 <- train
+    test_2016 <- test
+  } else if (currentYear == 2017) {
+    train_2017 <- train
+    test_2017 <- test
+  }
+}
+```
+
+### Log Loss Function
+##### This is a metric that will be used in addition to accuracy when comparing algorithms
+```{r}
+LogLoss <- function(predicted, actual){
+  ((-1) / length(predicted)) * sum((actual * log(predicted)) + ((1 - actual) * log(1 - predicted)))
+}
+```
+
+### Logistic Regression v1 -- Using all features
+```{r}
+##### 2010
+
+train_2010_spark <- as.DataFrame(train_2010)
+test_2010_spark <- as.DataFrame(test_2010)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2010_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2010, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2010_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2010$Pred <- pred_spark
+test_2010$PredRounded <- ifelse(test_2010$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2010$Pred <- ifelse(test_2010$Pred > 0.999, 0.999, test_2010$Pred)
+test_2010$Pred <- ifelse(test_2010$Pred < 0.001, 0.001, test_2010$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2011
+
+train_2011_spark <- as.DataFrame(train_2011)
+test_2011_spark <- as.DataFrame(test_2011)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2011_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2011, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2011_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2011$Pred <- pred_spark
+test_2011$PredRounded <- ifelse(test_2011$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2011$Pred <- ifelse(test_2011$Pred > 0.999, 0.999, test_2011$Pred)
+test_2011$Pred <- ifelse(test_2011$Pred < 0.001, 0.001, test_2011$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2012
+
+train_2012_spark <- as.DataFrame(train_2012)
+test_2012_spark <- as.DataFrame(test_2012)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2012_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2012, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2012_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2012$Pred <- pred_spark
+test_2012$PredRounded <- ifelse(test_2012$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2012$Pred <- ifelse(test_2012$Pred > 0.999, 0.999, test_2012$Pred)
+test_2012$Pred <- ifelse(test_2012$Pred < 0.001, 0.001, test_2012$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2013
+
+train_2013_spark <- as.DataFrame(train_2013)
+test_2013_spark <- as.DataFrame(test_2013)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2013_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2013, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2013_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2013$Pred <- pred_spark
+test_2013$PredRounded <- ifelse(test_2013$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2013$Pred <- ifelse(test_2013$Pred > 0.999, 0.999, test_2013$Pred)
+test_2013$Pred <- ifelse(test_2013$Pred < 0.001, 0.001, test_2013$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2014
+
+train_2014_spark <- as.DataFrame(train_2014)
+test_2014_spark <- as.DataFrame(test_2014)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2014_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2014, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2014_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2014$Pred <- pred_spark
+test_2014$PredRounded <- ifelse(test_2014$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2014$Pred <- ifelse(test_2014$Pred > 0.999, 0.999, test_2014$Pred)
+test_2014$Pred <- ifelse(test_2014$Pred < 0.001, 0.001, test_2014$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2015
+
+train_2015_spark <- as.DataFrame(train_2015)
+test_2015_spark <- as.DataFrame(test_2015)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2015_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2015, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2015_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2015$Pred <- pred_spark
+test_2015$PredRounded <- ifelse(test_2015$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2015$Pred <- ifelse(test_2015$Pred > 0.999, 0.999, test_2015$Pred)
+test_2015$Pred <- ifelse(test_2015$Pred < 0.001, 0.001, test_2015$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2016
+
+train_2016_spark <- as.DataFrame(train_2016)
+test_2016_spark <- as.DataFrame(test_2016)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2016_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2016, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2016_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2016$Pred <- pred_spark
+test_2016$PredRounded <- ifelse(test_2016$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2016$Pred <- ifelse(test_2016$Pred > 0.999, 0.999, test_2016$Pred)
+test_2016$Pred <- ifelse(test_2016$Pred < 0.001, 0.001, test_2016$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2017
+
+train_2017_spark <- as.DataFrame(train_2017)
+test_2017_spark <- as.DataFrame(test_2017)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2017_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Logistic Regression Model -- View Significant Features
+fit <- train(Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, data = train_2017, method = "glm", family = "binomial")
+summary(fit)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2017_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2017$Pred <- pred_spark
+test_2017$PredRounded <- ifelse(test_2017$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2017$Pred <- ifelse(test_2017$Pred > 0.999, 0.999, test_2017$Pred)
+test_2017$Pred <- ifelse(test_2017$Pred < 0.001, 0.001, test_2017$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### Results
+
+results_v1_2010 <- paste("   2010 -- Accuracy: ", round(mean(test_2010$PredRounded == test_2010$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2010$Pred, test_2010$Result), sep = "")
+results_v1_2011 <- paste("   2011 -- Accuracy: ", round(mean(test_2011$PredRounded == test_2011$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2011$Pred, test_2011$Result), sep = "")
+results_v1_2012 <- paste("   2012 -- Accuracy: ", round(mean(test_2012$PredRounded == test_2012$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2012$Pred, test_2012$Result), sep = "")
+results_v1_2013 <- paste("   2013 -- Accuracy: ", round(mean(test_2013$PredRounded == test_2013$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2013$Pred, test_2013$Result), sep = "")
+results_v1_2014 <- paste("   2014 -- Accuracy: ", round(mean(test_2014$PredRounded == test_2014$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2014$Pred, test_2014$Result), sep = "")
+results_v1_2015 <- paste("   2015 -- Accuracy: ", round(mean(test_2015$PredRounded == test_2015$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2015$Pred, test_2015$Result), sep = "")
+results_v1_2016 <- paste("   2016 -- Accuracy: ", round(mean(test_2016$PredRounded == test_2016$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2016$Pred, test_2016$Result), sep = "")
+results_v1_2017 <- paste("   2017 -- Accuracy: ", round(mean(test_2017$PredRounded == test_2017$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2017$Pred, test_2017$Result), sep = "")
+```
+
+### Logistic Regression v2 -- Using all features (larger regularization parameter)
+```{r}
+##### 2010
+
+train_2010_spark <- as.DataFrame(train_2010)
+test_2010_spark <- as.DataFrame(test_2010)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2010_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2010_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2010$Pred <- pred_spark
+test_2010$PredRounded <- ifelse(test_2010$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2010$Pred <- ifelse(test_2010$Pred > 0.999, 0.999, test_2010$Pred)
+test_2010$Pred <- ifelse(test_2010$Pred < 0.001, 0.001, test_2010$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2011
+
+train_2011_spark <- as.DataFrame(train_2011)
+test_2011_spark <- as.DataFrame(test_2011)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2011_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2011_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2011$Pred <- pred_spark
+test_2011$PredRounded <- ifelse(test_2011$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2011$Pred <- ifelse(test_2011$Pred > 0.999, 0.999, test_2011$Pred)
+test_2011$Pred <- ifelse(test_2011$Pred < 0.001, 0.001, test_2011$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2012
+
+train_2012_spark <- as.DataFrame(train_2012)
+test_2012_spark <- as.DataFrame(test_2012)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2012_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2012_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2012$Pred <- pred_spark
+test_2012$PredRounded <- ifelse(test_2012$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2012$Pred <- ifelse(test_2012$Pred > 0.999, 0.999, test_2012$Pred)
+test_2012$Pred <- ifelse(test_2012$Pred < 0.001, 0.001, test_2012$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2013
+
+train_2013_spark <- as.DataFrame(train_2013)
+test_2013_spark <- as.DataFrame(test_2013)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2013_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2013_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2013$Pred <- pred_spark
+test_2013$PredRounded <- ifelse(test_2013$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2013$Pred <- ifelse(test_2013$Pred > 0.999, 0.999, test_2013$Pred)
+test_2013$Pred <- ifelse(test_2013$Pred < 0.001, 0.001, test_2013$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2014
+
+train_2014_spark <- as.DataFrame(train_2014)
+test_2014_spark <- as.DataFrame(test_2014)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2014_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2014_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2014$Pred <- pred_spark
+test_2014$PredRounded <- ifelse(test_2014$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2014$Pred <- ifelse(test_2014$Pred > 0.999, 0.999, test_2014$Pred)
+test_2014$Pred <- ifelse(test_2014$Pred < 0.001, 0.001, test_2014$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2015
+
+train_2015_spark <- as.DataFrame(train_2015)
+test_2015_spark <- as.DataFrame(test_2015)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2015_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2015_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2015$Pred <- pred_spark
+test_2015$PredRounded <- ifelse(test_2015$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2015$Pred <- ifelse(test_2015$Pred > 0.999, 0.999, test_2015$Pred)
+test_2015$Pred <- ifelse(test_2015$Pred < 0.001, 0.001, test_2015$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2016
+
+train_2016_spark <- as.DataFrame(train_2016)
+test_2016_spark <- as.DataFrame(test_2016)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2016_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2016_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2016$Pred <- pred_spark
+test_2016$PredRounded <- ifelse(test_2016$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2016$Pred <- ifelse(test_2016$Pred > 0.999, 0.999, test_2016$Pred)
+test_2016$Pred <- ifelse(test_2016$Pred < 0.001, 0.001, test_2016$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2017
+
+train_2017_spark <- as.DataFrame(train_2017)
+test_2017_spark <- as.DataFrame(test_2017)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2017_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.5)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2017_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2017$Pred <- pred_spark
+test_2017$PredRounded <- ifelse(test_2017$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2017$Pred <- ifelse(test_2017$Pred > 0.999, 0.999, test_2017$Pred)
+test_2017$Pred <- ifelse(test_2017$Pred < 0.001, 0.001, test_2017$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### Results
+
+results_v2_2010 <- paste("   2010 -- Accuracy: ", round(mean(test_2010$PredRounded == test_2010$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2010$Pred, test_2010$Result), sep = "")
+results_v2_2011 <- paste("   2011 -- Accuracy: ", round(mean(test_2011$PredRounded == test_2011$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2011$Pred, test_2011$Result), sep = "")
+results_v2_2012 <- paste("   2012 -- Accuracy: ", round(mean(test_2012$PredRounded == test_2012$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2012$Pred, test_2012$Result), sep = "")
+results_v2_2013 <- paste("   2013 -- Accuracy: ", round(mean(test_2013$PredRounded == test_2013$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2013$Pred, test_2013$Result), sep = "")
+results_v2_2014 <- paste("   2014 -- Accuracy: ", round(mean(test_2014$PredRounded == test_2014$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2014$Pred, test_2014$Result), sep = "")
+results_v2_2015 <- paste("   2015 -- Accuracy: ", round(mean(test_2015$PredRounded == test_2015$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2015$Pred, test_2015$Result), sep = "")
+results_v2_2016 <- paste("   2016 -- Accuracy: ", round(mean(test_2016$PredRounded == test_2016$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2016$Pred, test_2016$Result), sep = "")
+results_v2_2017 <- paste("   2017 -- Accuracy: ", round(mean(test_2017$PredRounded == test_2017$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2017$Pred, test_2017$Result), sep = "")
+```
+
+### Logistic Regression v3 -- Using all features (smaller regularization parameter)
+```{r}
+##### 2010
+
+train_2010_spark <- as.DataFrame(train_2010)
+test_2010_spark <- as.DataFrame(test_2010)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2010_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2010_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2010$Pred <- pred_spark
+test_2010$PredRounded <- ifelse(test_2010$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2010$Pred <- ifelse(test_2010$Pred > 0.999, 0.999, test_2010$Pred)
+test_2010$Pred <- ifelse(test_2010$Pred < 0.001, 0.001, test_2010$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2011
+
+train_2011_spark <- as.DataFrame(train_2011)
+test_2011_spark <- as.DataFrame(test_2011)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2011_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2011_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2011$Pred <- pred_spark
+test_2011$PredRounded <- ifelse(test_2011$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2011$Pred <- ifelse(test_2011$Pred > 0.999, 0.999, test_2011$Pred)
+test_2011$Pred <- ifelse(test_2011$Pred < 0.001, 0.001, test_2011$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2012
+
+train_2012_spark <- as.DataFrame(train_2012)
+test_2012_spark <- as.DataFrame(test_2012)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2012_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2012_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2012$Pred <- pred_spark
+test_2012$PredRounded <- ifelse(test_2012$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2012$Pred <- ifelse(test_2012$Pred > 0.999, 0.999, test_2012$Pred)
+test_2012$Pred <- ifelse(test_2012$Pred < 0.001, 0.001, test_2012$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2013
+
+train_2013_spark <- as.DataFrame(train_2013)
+test_2013_spark <- as.DataFrame(test_2013)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2013_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2013_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2013$Pred <- pred_spark
+test_2013$PredRounded <- ifelse(test_2013$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2013$Pred <- ifelse(test_2013$Pred > 0.999, 0.999, test_2013$Pred)
+test_2013$Pred <- ifelse(test_2013$Pred < 0.001, 0.001, test_2013$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2014
+
+train_2014_spark <- as.DataFrame(train_2014)
+test_2014_spark <- as.DataFrame(test_2014)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2014_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2014_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2014$Pred <- pred_spark
+test_2014$PredRounded <- ifelse(test_2014$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2014$Pred <- ifelse(test_2014$Pred > 0.999, 0.999, test_2014$Pred)
+test_2014$Pred <- ifelse(test_2014$Pred < 0.001, 0.001, test_2014$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2015
+
+train_2015_spark <- as.DataFrame(train_2015)
+test_2015_spark <- as.DataFrame(test_2015)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2015_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2015_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2015$Pred <- pred_spark
+test_2015$PredRounded <- ifelse(test_2015$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2015$Pred <- ifelse(test_2015$Pred > 0.999, 0.999, test_2015$Pred)
+test_2015$Pred <- ifelse(test_2015$Pred < 0.001, 0.001, test_2015$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2016
+
+train_2016_spark <- as.DataFrame(train_2016)
+test_2016_spark <- as.DataFrame(test_2016)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2016_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2016_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2016$Pred <- pred_spark
+test_2016$PredRounded <- ifelse(test_2016$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2016$Pred <- ifelse(test_2016$Pred > 0.999, 0.999, test_2016$Pred)
+test_2016$Pred <- ifelse(test_2016$Pred < 0.001, 0.001, test_2016$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2017
+
+train_2017_spark <- as.DataFrame(train_2017)
+test_2017_spark <- as.DataFrame(test_2017)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2017_spark, Result ~ SeedDiff + TotalCoachYearsDiff + CurrCoachYearsDiff + WinsDiff + LossesDiff + NeutralWinsDiff + NeutralLossesDiff + NeutralWinsPctDiff + NeutralLossesPctDiff + AvgScoreDiff + AvgFGMDiff + AvgFGADiff + AvgFGM2Diff + AvgFGA2Diff + AvgFGM3Diff + AvgFGA3Diff + AvgFTMDiff + AvgFTADiff + AvgORDiff + AvgDRDiff + AvgAstDiff + AvgTODiff + AvgStlDiff + AvgBlkDiff + AvgPFDiff, regParam = 0.1)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2017_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2017$Pred <- pred_spark
+test_2017$PredRounded <- ifelse(test_2017$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2017$Pred <- ifelse(test_2017$Pred > 0.999, 0.999, test_2017$Pred)
+test_2017$Pred <- ifelse(test_2017$Pred < 0.001, 0.001, test_2017$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### Results
+
+results_v3_2010 <- paste("   2010 -- Accuracy: ", round(mean(test_2010$PredRounded == test_2010$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2010$Pred, test_2010$Result), sep = "")
+results_v3_2011 <- paste("   2011 -- Accuracy: ", round(mean(test_2011$PredRounded == test_2011$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2011$Pred, test_2011$Result), sep = "")
+results_v3_2012 <- paste("   2012 -- Accuracy: ", round(mean(test_2012$PredRounded == test_2012$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2012$Pred, test_2012$Result), sep = "")
+results_v3_2013 <- paste("   2013 -- Accuracy: ", round(mean(test_2013$PredRounded == test_2013$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2013$Pred, test_2013$Result), sep = "")
+results_v3_2014 <- paste("   2014 -- Accuracy: ", round(mean(test_2014$PredRounded == test_2014$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2014$Pred, test_2014$Result), sep = "")
+results_v3_2015 <- paste("   2015 -- Accuracy: ", round(mean(test_2015$PredRounded == test_2015$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2015$Pred, test_2015$Result), sep = "")
+results_v3_2016 <- paste("   2016 -- Accuracy: ", round(mean(test_2016$PredRounded == test_2016$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2016$Pred, test_2016$Result), sep = "")
+results_v3_2017 <- paste("   2017 -- Accuracy: ", round(mean(test_2017$PredRounded == test_2017$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2017$Pred, test_2017$Result), sep = "")
+```
+
+### Logistic Regression v4 -- Using only best features that were shared in all 8 years
+```{r}
+##### 2010
+
+train_2010_spark <- as.DataFrame(train_2010)
+test_2010_spark <- as.DataFrame(test_2010)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2010_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2010_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2010$Pred <- pred_spark
+test_2010$PredRounded <- ifelse(test_2010$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2010$Pred <- ifelse(test_2010$Pred > 0.999, 0.999, test_2010$Pred)
+test_2010$Pred <- ifelse(test_2010$Pred < 0.001, 0.001, test_2010$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2011
+
+train_2011_spark <- as.DataFrame(train_2011)
+test_2011_spark <- as.DataFrame(test_2011)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2011_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2011_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2011$Pred <- pred_spark
+test_2011$PredRounded <- ifelse(test_2011$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2011$Pred <- ifelse(test_2011$Pred > 0.999, 0.999, test_2011$Pred)
+test_2011$Pred <- ifelse(test_2011$Pred < 0.001, 0.001, test_2011$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2012
+
+train_2012_spark <- as.DataFrame(train_2012)
+test_2012_spark <- as.DataFrame(test_2012)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2012_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2012_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2012$Pred <- pred_spark
+test_2012$PredRounded <- ifelse(test_2012$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2012$Pred <- ifelse(test_2012$Pred > 0.999, 0.999, test_2012$Pred)
+test_2012$Pred <- ifelse(test_2012$Pred < 0.001, 0.001, test_2012$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2013
+
+train_2013_spark <- as.DataFrame(train_2013)
+test_2013_spark <- as.DataFrame(test_2013)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2013_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2013_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2013$Pred <- pred_spark
+test_2013$PredRounded <- ifelse(test_2013$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2013$Pred <- ifelse(test_2013$Pred > 0.999, 0.999, test_2013$Pred)
+test_2013$Pred <- ifelse(test_2013$Pred < 0.001, 0.001, test_2013$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2014
+
+train_2014_spark <- as.DataFrame(train_2014)
+test_2014_spark <- as.DataFrame(test_2014)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2014_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2014_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2014$Pred <- pred_spark
+test_2014$PredRounded <- ifelse(test_2014$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2014$Pred <- ifelse(test_2014$Pred > 0.999, 0.999, test_2014$Pred)
+test_2014$Pred <- ifelse(test_2014$Pred < 0.001, 0.001, test_2014$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2015
+
+train_2015_spark <- as.DataFrame(train_2015)
+test_2015_spark <- as.DataFrame(test_2015)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2015_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2015_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2015$Pred <- pred_spark
+test_2015$PredRounded <- ifelse(test_2015$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2015$Pred <- ifelse(test_2015$Pred > 0.999, 0.999, test_2015$Pred)
+test_2015$Pred <- ifelse(test_2015$Pred < 0.001, 0.001, test_2015$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2016
+
+train_2016_spark <- as.DataFrame(train_2016)
+test_2016_spark <- as.DataFrame(test_2016)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2016_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2016_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2016$Pred <- pred_spark
+test_2016$PredRounded <- ifelse(test_2016$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2016$Pred <- ifelse(test_2016$Pred > 0.999, 0.999, test_2016$Pred)
+test_2016$Pred <- ifelse(test_2016$Pred < 0.001, 0.001, test_2016$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2017
+
+train_2017_spark <- as.DataFrame(train_2017)
+test_2017_spark <- as.DataFrame(test_2017)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2017_spark, Result ~ SeedDiff + TotalCoachYearsDiff + WinsDiff + NeutralLossesDiff + AvgDRDiff + AvgBlkDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2017_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2017$Pred <- pred_spark
+test_2017$PredRounded <- ifelse(test_2017$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2017$Pred <- ifelse(test_2017$Pred > 0.999, 0.999, test_2017$Pred)
+test_2017$Pred <- ifelse(test_2017$Pred < 0.001, 0.001, test_2017$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### Results
+
+results_v4_2010 <- paste("   2010 -- Accuracy: ", round(mean(test_2010$PredRounded == test_2010$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2010$Pred, test_2010$Result), sep = "")
+results_v4_2011 <- paste("   2011 -- Accuracy: ", round(mean(test_2011$PredRounded == test_2011$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2011$Pred, test_2011$Result), sep = "")
+results_v4_2012 <- paste("   2012 -- Accuracy: ", round(mean(test_2012$PredRounded == test_2012$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2012$Pred, test_2012$Result), sep = "")
+results_v4_2013 <- paste("   2013 -- Accuracy: ", round(mean(test_2013$PredRounded == test_2013$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2013$Pred, test_2013$Result), sep = "")
+results_v4_2014 <- paste("   2014 -- Accuracy: ", round(mean(test_2014$PredRounded == test_2014$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2014$Pred, test_2014$Result), sep = "")
+results_v4_2015 <- paste("   2015 -- Accuracy: ", round(mean(test_2015$PredRounded == test_2015$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2015$Pred, test_2015$Result), sep = "")
+results_v4_2016 <- paste("   2016 -- Accuracy: ", round(mean(test_2016$PredRounded == test_2016$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2016$Pred, test_2016$Result), sep = "")
+results_v4_2017 <- paste("   2017 -- Accuracy: ", round(mean(test_2017$PredRounded == test_2017$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2017$Pred, test_2017$Result), sep = "")
+```
+
+### Logistic Regression v5 -- Using only SeedDiff
+```{r}
+##### 2010
+
+train_2010_spark <- as.DataFrame(train_2010)
+test_2010_spark <- as.DataFrame(test_2010)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2010_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2010_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2010$Pred <- pred_spark
+test_2010$PredRounded <- ifelse(test_2010$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2010$Pred <- ifelse(test_2010$Pred > 0.999, 0.999, test_2010$Pred)
+test_2010$Pred <- ifelse(test_2010$Pred < 0.001, 0.001, test_2010$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2011
+
+train_2011_spark <- as.DataFrame(train_2011)
+test_2011_spark <- as.DataFrame(test_2011)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2011_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2011_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2011$Pred <- pred_spark
+test_2011$PredRounded <- ifelse(test_2011$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2011$Pred <- ifelse(test_2011$Pred > 0.999, 0.999, test_2011$Pred)
+test_2011$Pred <- ifelse(test_2011$Pred < 0.001, 0.001, test_2011$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2012
+
+train_2012_spark <- as.DataFrame(train_2012)
+test_2012_spark <- as.DataFrame(test_2012)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2012_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2012_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2012$Pred <- pred_spark
+test_2012$PredRounded <- ifelse(test_2012$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2012$Pred <- ifelse(test_2012$Pred > 0.999, 0.999, test_2012$Pred)
+test_2012$Pred <- ifelse(test_2012$Pred < 0.001, 0.001, test_2012$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2013
+
+train_2013_spark <- as.DataFrame(train_2013)
+test_2013_spark <- as.DataFrame(test_2013)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2013_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2013_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2013$Pred <- pred_spark
+test_2013$PredRounded <- ifelse(test_2013$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2013$Pred <- ifelse(test_2013$Pred > 0.999, 0.999, test_2013$Pred)
+test_2013$Pred <- ifelse(test_2013$Pred < 0.001, 0.001, test_2013$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2014
+
+train_2014_spark <- as.DataFrame(train_2014)
+test_2014_spark <- as.DataFrame(test_2014)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2014_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2014_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2014$Pred <- pred_spark
+test_2014$PredRounded <- ifelse(test_2014$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2014$Pred <- ifelse(test_2014$Pred > 0.999, 0.999, test_2014$Pred)
+test_2014$Pred <- ifelse(test_2014$Pred < 0.001, 0.001, test_2014$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2015
+
+train_2015_spark <- as.DataFrame(train_2015)
+test_2015_spark <- as.DataFrame(test_2015)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2015_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2015_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2015$Pred <- pred_spark
+test_2015$PredRounded <- ifelse(test_2015$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2015$Pred <- ifelse(test_2015$Pred > 0.999, 0.999, test_2015$Pred)
+test_2015$Pred <- ifelse(test_2015$Pred < 0.001, 0.001, test_2015$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2016
+
+train_2016_spark <- as.DataFrame(train_2016)
+test_2016_spark <- as.DataFrame(test_2016)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2016_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2016_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2016$Pred <- pred_spark
+test_2016$PredRounded <- ifelse(test_2016$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2016$Pred <- ifelse(test_2016$Pred > 0.999, 0.999, test_2016$Pred)
+test_2016$Pred <- ifelse(test_2016$Pred < 0.001, 0.001, test_2016$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2017
+
+train_2017_spark <- as.DataFrame(train_2017)
+test_2017_spark <- as.DataFrame(test_2017)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2017_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2017_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2017$Pred <- pred_spark
+test_2017$PredRounded <- ifelse(test_2017$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2017$Pred <- ifelse(test_2017$Pred > 0.999, 0.999, test_2017$Pred)
+test_2017$Pred <- ifelse(test_2017$Pred < 0.001, 0.001, test_2017$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### Results
+
+results_v5_2010 <- paste("   2010 -- Accuracy: ", round(mean(test_2010$PredRounded == test_2010$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2010$Pred, test_2010$Result), sep = "")
+results_v5_2011 <- paste("   2011 -- Accuracy: ", round(mean(test_2011$PredRounded == test_2011$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2011$Pred, test_2011$Result), sep = "")
+results_v5_2012 <- paste("   2012 -- Accuracy: ", round(mean(test_2012$PredRounded == test_2012$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2012$Pred, test_2012$Result), sep = "")
+results_v5_2013 <- paste("   2013 -- Accuracy: ", round(mean(test_2013$PredRounded == test_2013$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2013$Pred, test_2013$Result), sep = "")
+results_v5_2014 <- paste("   2014 -- Accuracy: ", round(mean(test_2014$PredRounded == test_2014$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2014$Pred, test_2014$Result), sep = "")
+results_v5_2015 <- paste("   2015 -- Accuracy: ", round(mean(test_2015$PredRounded == test_2015$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2015$Pred, test_2015$Result), sep = "")
+results_v5_2016 <- paste("   2016 -- Accuracy: ", round(mean(test_2016$PredRounded == test_2016$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2016$Pred, test_2016$Result), sep = "")
+results_v5_2017 <- paste("   2017 -- Accuracy: ", round(mean(test_2017$PredRounded == test_2017$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2017$Pred, test_2017$Result), sep = "")
+```
+
+### Logistic Regression v6 -- Using multiple features with interaction effects
+```{r}
+##### 2010
+
+train_2010_spark <- as.DataFrame(train_2010)
+test_2010_spark <- as.DataFrame(test_2010)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2010_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2010_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2010$Pred <- pred_spark
+test_2010$PredRounded <- ifelse(test_2010$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2010$Pred <- ifelse(test_2010$Pred > 0.999, 0.999, test_2010$Pred)
+test_2010$Pred <- ifelse(test_2010$Pred < 0.001, 0.001, test_2010$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2011
+
+train_2011_spark <- as.DataFrame(train_2011)
+test_2011_spark <- as.DataFrame(test_2011)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2011_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2011_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2011$Pred <- pred_spark
+test_2011$PredRounded <- ifelse(test_2011$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2011$Pred <- ifelse(test_2011$Pred > 0.999, 0.999, test_2011$Pred)
+test_2011$Pred <- ifelse(test_2011$Pred < 0.001, 0.001, test_2011$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2012
+
+train_2012_spark <- as.DataFrame(train_2012)
+test_2012_spark <- as.DataFrame(test_2012)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2012_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2012_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2012$Pred <- pred_spark
+test_2012$PredRounded <- ifelse(test_2012$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2012$Pred <- ifelse(test_2012$Pred > 0.999, 0.999, test_2012$Pred)
+test_2012$Pred <- ifelse(test_2012$Pred < 0.001, 0.001, test_2012$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2013
+
+train_2013_spark <- as.DataFrame(train_2013)
+test_2013_spark <- as.DataFrame(test_2013)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2013_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2013_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2013$Pred <- pred_spark
+test_2013$PredRounded <- ifelse(test_2013$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2013$Pred <- ifelse(test_2013$Pred > 0.999, 0.999, test_2013$Pred)
+test_2013$Pred <- ifelse(test_2013$Pred < 0.001, 0.001, test_2013$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2014
+
+train_2014_spark <- as.DataFrame(train_2014)
+test_2014_spark <- as.DataFrame(test_2014)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2014_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2014_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2014$Pred <- pred_spark
+test_2014$PredRounded <- ifelse(test_2014$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2014$Pred <- ifelse(test_2014$Pred > 0.999, 0.999, test_2014$Pred)
+test_2014$Pred <- ifelse(test_2014$Pred < 0.001, 0.001, test_2014$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2015
+
+train_2015_spark <- as.DataFrame(train_2015)
+test_2015_spark <- as.DataFrame(test_2015)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2015_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2015_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2015$Pred <- pred_spark
+test_2015$PredRounded <- ifelse(test_2015$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2015$Pred <- ifelse(test_2015$Pred > 0.999, 0.999, test_2015$Pred)
+test_2015$Pred <- ifelse(test_2015$Pred < 0.001, 0.001, test_2015$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2016
+
+train_2016_spark <- as.DataFrame(train_2016)
+test_2016_spark <- as.DataFrame(test_2016)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2016_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2016_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2016$Pred <- pred_spark
+test_2016$PredRounded <- ifelse(test_2016$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2016$Pred <- ifelse(test_2016$Pred > 0.999, 0.999, test_2016$Pred)
+test_2016$Pred <- ifelse(test_2016$Pred < 0.001, 0.001, test_2016$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### 2017
+
+train_2017_spark <- as.DataFrame(train_2017)
+test_2017_spark <- as.DataFrame(test_2017)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_2017_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_2017_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test_2017$Pred <- pred_spark
+test_2017$PredRounded <- ifelse(test_2017$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test_2017$Pred <- ifelse(test_2017$Pred > 0.999, 0.999, test_2017$Pred)
+test_2017$Pred <- ifelse(test_2017$Pred < 0.001, 0.001, test_2017$Pred)
+
+# ------------------------------------------------------------------------------------------------------------- #
+# ------------------------------------------------------------------------------------------------------------- #
+
+##### Results
+
+results_v6_2010 <- paste("   2010 -- Accuracy: ", round(mean(test_2010$PredRounded == test_2010$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2010$Pred, test_2010$Result), sep = "")
+results_v6_2011 <- paste("   2011 -- Accuracy: ", round(mean(test_2011$PredRounded == test_2011$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2011$Pred, test_2011$Result), sep = "")
+results_v6_2012 <- paste("   2012 -- Accuracy: ", round(mean(test_2012$PredRounded == test_2012$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2012$Pred, test_2012$Result), sep = "")
+results_v6_2013 <- paste("   2013 -- Accuracy: ", round(mean(test_2013$PredRounded == test_2013$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2013$Pred, test_2013$Result), sep = "")
+results_v6_2014 <- paste("   2014 -- Accuracy: ", round(mean(test_2014$PredRounded == test_2014$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2014$Pred, test_2014$Result), sep = "")
+results_v6_2015 <- paste("   2015 -- Accuracy: ", round(mean(test_2015$PredRounded == test_2015$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2015$Pred, test_2015$Result), sep = "")
+results_v6_2016 <- paste("   2016 -- Accuracy: ", round(mean(test_2016$PredRounded == test_2016$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2016$Pred, test_2016$Result), sep = "")
+results_v6_2017 <- paste("   2017 -- Accuracy: ", round(mean(test_2017$PredRounded == test_2017$Result) * 100, 2), "%, Log Loss: ", LogLoss(test_2017$Pred, test_2017$Result), sep = "")
+```
+
+### Display results
+```{r}
+cat("Logistic Regression v1 -- Using all features", results_v1_2010, results_v1_2011, results_v1_2012, results_v1_2013, results_v1_2014, results_v1_2015, results_v1_2016, results_v1_2017, "Logistic Regression v2 -- Using all features (larger regularization parameter)", results_v2_2010, results_v2_2011, results_v2_2012, results_v2_2013, results_v2_2014, results_v2_2015, results_v2_2016, results_v2_2017, "Logistic Regression v3 -- Using all features (smaller regularization parameter)", results_v3_2010, results_v3_2011, results_v3_2012, results_v3_2013, results_v3_2014, results_v3_2015, results_v3_2016, results_v3_2017, "Logistic Regression v4 -- Using only best features that were shared in all 8 years", results_v4_2010, results_v4_2011, results_v4_2012, results_v4_2013, results_v4_2014, results_v4_2015, results_v4_2016, results_v4_2017, "Logistic Regression v5 -- Using only SeedDiff", results_v5_2010, results_v5_2011, results_v5_2012, results_v5_2013, results_v5_2014, results_v5_2015, results_v5_2016, results_v5_2017, "Logistic Regression v6 -- Using multiple features with interaction effects", results_v6_2010, results_v6_2011, results_v6_2012, results_v6_2013, results_v6_2014, results_v6_2015, results_v6_2016, results_v6_2017, sep = "\n")
+
+# Accuracy Data
+df <- data.frame(Year = c(2010:2017, 2010:2017, 2010:2017, 2010:2017, 2010:2017, 2010:2017), Accuracy = c(60.94, 62.69, 68.66, 58.21, 65.67, 74.63, 68.66, 62.69, 60.94, 62.69, 68.66, 58.21, 65.67, 74.63, 67.16, 62.69, 62.50, 62.69, 67.16, 61.19, 64.18, 73.13, 68.66, 65.67, 67.19, 61.19, 73.13, 58.21, 67.16, 71.64, 67.16, 70.15, 65.62, 65.67, 68.66, 64.18, 60.45, 69.40, 64.93, 75.37, 64.84, 66.42, 67.91, 56.72, 59.7, 74.63, 63.43, 79.10), Model = c("Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6"))
+
+# Accuracy Graph
+ggplot(data = df, aes(x = Year, y = Accuracy)) + labs(title = "Accuracy of Models 1-6", y = "Accuracy (in Percent)") + theme(plot.title = element_text(hjust = 0.5)) + geom_line(aes(colour = Model))
+
+# Log Loss Data
+df <- data.frame(Year = c(2010:2017, 2010:2017, 2010:2017, 2010:2017, 2010:2017, 2010:2017), LogLoss = c(0.637657895659837, 0.642487606241149, 0.623093471631615, 0.621676056459892, 0.638381230327123, 0.55665530828592, 0.594565989173383, 0.589008088553894, 0.641936956135501, 0.644106381154092, 0.627185090938341, 0.62901858335537, 0.641362504016647, 0.569008602412469, 0.602623420991023, 0.592512464317325, 0.632943735073969, 0.644001568450078, 0.620476721515637, 0.610161460534458, 0.63603869604783, 0.541646564133012, 0.58264302722891, 0.58948684055428, 0.643408138337777, 0.647083137094398, 0.612624653868175, 0.62762683715455, 0.637430709327536, 0.58192943747764, 0.608768880120449, 0.588613193357081, 0.653600290811582, 0.651760483927483, 0.643819724554219, 0.651932745956276, 0.651047756911154, 0.617103669122801, 0.644306869807052, 0.604992527355152, 0.636278307563745, 0.647360182548983, 0.65203944654974, 0.644665302300745, 0.661452829623492, 0.584199522983246, 0.626956628545309, 0.595880652366865), Model = c("Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 1", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 2", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 3", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 4", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 5", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6", "Model 6"))
+
+# Log Loss Graph
+ggplot(data = df, aes(x = Year, y = LogLoss)) + labs(title = "Log Loss of Models 1-6", y = "Log Loss") + theme(plot.title = element_text(hjust = 0.5)) + geom_line(aes(colour = Model))
+```

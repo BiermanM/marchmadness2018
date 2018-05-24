@@ -1,0 +1,307 @@
+# Matthew Bierman
+# CS 4301.002
+# March Madness Project
+
+## This script creates the submission file for the Kaggle competition
+###### All of the outputs for creating the train and test datasets can be seen in this script that could not be seen in the Testing script
+
+### Import libraries
+```{r}
+options(warn=-1)
+library(caret)
+library(SparkR)
+library(dplyr)
+library(magrittr)
+library(tidyr)
+```
+
+### Load Apache Spark
+```{r}
+sparkR.session()
+sc <- sparkR.init(master = "local")
+```
+
+### Import datasets
+```{r}
+# Import full team data for 2018
+fullTeamData <- read.df(path = "Data/fullTeamData2018.csv", source = "csv", header = "true")
+fullTeamData <- as.data.frame(fullTeamData)
+fullTeamData[, c(1, 36)] <- sapply(fullTeamData[, c(1, 36)], as.numeric)
+
+# Import submission file
+test <- read.df(path = "Data/SampleSubmissionStage2.csv", source = "csv", header = "true")
+test <- as.data.frame(test)
+test[, c(2)] <- sapply(test[, c(2)], as.numeric)
+```
+
+### Set the year for what data to use
+##### (2018 for Kaggle submission)
+```{r}
+currentYear <- 2018
+```
+
+### Create train dataset
+##### Train = regular season
+```{r}
+# Submission file has ID in the form of Year_Team1ID_Team2ID, Result is 1 if Team1 wins, 0 if Team2 wins
+# Create ID for each game, where train_1 has all Team1's winning and train_2 has all Team2's winning
+train <- read.df(path = "Data/RegularSeasonCompactResults.csv", source = "csv", header = "true")
+train <- as.data.frame(train)
+train[, c(1:6, 8)] <- sapply(train[, c(1:6, 8)], as.numeric)
+train_1 <- train[, c(1, 3, 5)]
+train_1$ID <- paste(train_1$Season, train_1$WTeamID, train_1$LTeamID, sep = "_")
+train_1$Result <- 1
+train_2 <- train[, c(1, 3, 5)]
+train_2$ID <- paste(train_2$Season, train_2$LTeamID, train_2$WTeamID, sep = "_")
+train_2$Result <- 0
+
+# Combine train_1 and train_2 into train, which has every game played from that season with both Team ID's and the result
+train <- rbind(train_1, train_2)
+train <- train[train$Season == currentYear, ]
+train <- train[order(train$ID), ]
+train$WTeamID <- as.integer(substr(train$ID, 6, 9))
+train$LTeamID <- as.integer(substr(train$ID, 11, 14))
+train <- train %>% set_colnames(c("Season", "TeamID.x", "TeamID.y", "ID", "Result"))
+head(train)
+
+# Add team data from fullTeamData to each team in train dataset
+fullTeamData_2 <- fullTeamData
+colnames(fullTeamData_2)[1] <- "TeamID.x"
+train <- merge(train, fullTeamData_2, by = c("TeamID.x"))
+colnames(fullTeamData_2)[1] <- "TeamID.y"
+train <- merge(train, fullTeamData_2, by = c("TeamID.y"))
+train <- train[order(train$ID), ]
+train[, c(10:40, 45:75)] <- sapply(train[, c(10:40, 45:75)], as.numeric)
+
+dim(train)
+head(train)
+```
+
+### Create test dataset
+##### Test = March Madness postseason tournament
+```{r}
+# Get both Team ID's from ID
+test <- read.df(path = "Data/SampleSubmissionStage2.csv", source = "csv", header = "true")
+test <- as.data.frame(test)
+test[, c(2)] <- sapply(test[, c(2)], as.numeric)
+test$Season <- as.integer(substr(test$ID, 1, 4))
+test$TeamID.x <- as.integer(substr(test$ID, 6, 9))
+test$TeamID.y <- as.integer(substr(test$ID, 11, 14))
+test <- test[, c(3:5, 1, 2)]
+
+dim(test)
+head(test)
+
+# Merge fullTeamData with test set
+fullTeamData_2 <- fullTeamData
+colnames(fullTeamData_2)[1] <- "TeamID.x"
+test <- merge(test, fullTeamData_2, by = c("TeamID.x"))
+colnames(fullTeamData_2)[1] <- "TeamID.y"
+test <- merge(test, fullTeamData_2, by = c("TeamID.y"))
+test <- test[order(test$ID), ]
+test[, c(10:40, 45:75)] <- sapply(test[, c(10:40, 45:75)], as.numeric)
+str(test)
+```
+
+### Create Diff columns for each feature for both train and test datasets
+* SeedDiff = Team 1 Seed - Team 2 Seed
+* TotalCoachYearsDiff = Team 1 TotalCoachYears - Team 2 TotalCoachYears
+* CurrCoachYearsDiff = Team 1 CurrCoachYears - Team 2 CurrCoachYears
+* WinsDiff = Team 1 Wins - Team 2 Wins
+* LossesDiff = Team 1 Losses - Team 2 Losses
+* NeutralWinsDiff = Team 1 NeutralWins - Team 2 NeutralWins
+* NeutralLossesDiff = Team 1 NeutralLosses - Team 2 NeutralLosses
+* NeutralWinsPctDiff = Team 1 NeutralWinsPct - Team 2 NeutralWinsPct
+* NeutralLossesPctDiff = Team 1 NeutralLossesPct - Team 2 NeutralLossesPct
+* AvgScoreDiff = Team 1 AvgScore - Team 2 AvgScore
+* AvgFGMDiff = Team 1 AvgFGM - Team 2 AvgFGM
+* AvgFGADiff = Team 1 AvgFGA - Team 2 AvgFGA
+* AvgFGM2Diff = Team 1 AvgFGM2 - Team 2 AvgFGM2
+* AvgFGA2Diff = Team 1 AvgFGA2 - Team 2 AvgFGA2
+* AvgFGM3Diff = Team 1 AvgFGM3 - Team 2 AvgFGM3
+* AvgFGA3Diff = Team 1 AvgFGA3 - Team 2 AvgFGA3
+* AvgFTMDiff = Team 1 AvgFTM - Team 2 AvgFTM
+* AvgFTADiff = Team 1 AvgFTA - Team 2 AvgFTA
+* AvgORDiff = Team 1 AvgOR - Team 2 AvgOR
+* AvgDRDiff = Team 1 AvgDR - Team 2 AvgDR
+* AvgAstDiff = Team 1 AvgAst - Team 2 AvgAst
+* AvgTODiff = Team 1 AvgTO - Team 2 AvgTO
+* AvgStlDiff = Team 1 AvgStl - Team 2 AvgStl
+* AvgBlkDiff = Team 1 AvgBlk - Team 2 AvgBlk
+* AvgPFDiff = Team 1 AvgPF - Team 2 AvgPF
+```{r}
+# Add SeedDiff column to both datasets
+train$SeedDiff <- train$Seed.x - train$Seed.y
+test$SeedDiff <- test$Seed.x - test$Seed.y
+
+# Add TotalCoachYearsDiff column to both datasets
+train$TotalCoachYearsDiff <- train$TotalCoachYears.x - train$TotalCoachYears.y
+test$TotalCoachYearsDiff <- test$TotalCoachYears.x - test$TotalCoachYears.y
+
+# Add CurrCoachYearsDiff column to both datasets
+train$CurrCoachYearsDiff <- train$CurrCoachYears.x - train$CurrCoachYears.y
+test$CurrCoachYearsDiff <- test$CurrCoachYears.x - test$CurrCoachYears.y
+
+# Add WinsDiff column to both datasets
+train$WinsDiff <- train$Wins.x - train$Wins.y
+test$WinsDiff <- test$Wins.x - test$Wins.y
+
+# Add LossesDiff column to both datasets
+train$LossesDiff <- train$Losses.x - train$Losses.y
+test$LossesDiff <- test$Losses.x - test$Losses.y
+
+# Add NeutralWinsDiff column to both datasets
+train$NeutralWinsDiff <- train$NeutralWins.x - train$NeutralWins.y
+test$NeutralWinsDiff <- test$NeutralWins.x - test$NeutralWins.y
+
+# Add NeutralLossesDiff column to both datasets
+train$NeutralLossesDiff <- train$NeutralLosses.x - train$NeutralLosses.y
+test$NeutralLossesDiff <- test$NeutralLosses.x - test$NeutralLosses.y
+
+# Add NeutralWinsPctDiff column to both datasets
+train$NeutralWinsPctDiff <- train$NeutralWinsPct.x - train$NeutralWinsPct.y
+test$NeutralWinsPctDiff <- test$NeutralWinsPct.x - test$NeutralWinsPct.y
+
+# Add NeutralLossesPctDiff column to both datasets
+train$NeutralLossesPctDiff <- train$NeutralLossesPct.x - train$NeutralLossesPct.y
+test$NeutralLossesPctDiff <- test$NeutralLossesPct.x - test$NeutralLossesPct.y
+
+# Add AvgScoreDiff column to both datasets
+train$AvgScoreDiff <- train$AvgScore.x - train$AvgScore.y
+test$AvgScoreDiff <- test$AvgScore.x - test$AvgScore.y
+
+# Add AvgFGMDiff column to both datasets
+train$AvgFGMDiff <- train$AvgFGM.x - train$AvgFGM.y
+test$AvgFGMDiff <- test$AvgFGM.x - test$AvgFGM.y
+
+# Add AvgFGADiff column to both datasets
+train$AvgFGADiff <- train$AvgFGA.x - train$AvgFGA.y
+test$AvgFGADiff <- test$AvgFGA.x - test$AvgFGA.y
+
+# Add AvgFGM2Diff column to both datasets
+train$AvgFGM2Diff <- train$AvgFGM2.x - train$AvgFGM2.y
+test$AvgFGM2Diff <- test$AvgFGM2.x - test$AvgFGM2.y
+
+# Add AvgFGA2Diff column to both datasets
+train$AvgFGA2Diff <- train$AvgFGA2.x - train$AvgFGA2.y
+test$AvgFGA2Diff <- test$AvgFGA2.x - test$AvgFGA2.y
+
+# Add AvgFGM3Diff column to both datasets
+train$AvgFGM3Diff <- train$AvgFGM3.x - train$AvgFGM3.y
+test$AvgFGM3Diff <- test$AvgFGM3.x - test$AvgFGM3.y
+
+# Add AvgFGA3Diff column to both datasets
+train$AvgFGA3Diff <- train$AvgFGA3.x - train$AvgFGA3.y
+test$AvgFGA3Diff <- test$AvgFGA3.x - test$AvgFGA3.y
+
+# Add AvgFTMDiff column to both datasets
+train$AvgFTMDiff <- train$AvgFTM.x - train$AvgFTM.y
+test$AvgFTMDiff <- test$AvgFTM.x - test$AvgFTM.y
+
+# Add AvgFTADiff column to both datasets
+train$AvgFTADiff <- train$AvgFTA.x - train$AvgFTA.y
+test$AvgFTADiff <- test$AvgFTA.x - test$AvgFTA.y
+
+# Add AvgORDiff column to both datasets
+train$AvgORDiff <- train$AvgOR.x - train$AvgOR.y
+test$AvgORDiff <- test$AvgOR.x - test$AvgOR.y
+
+# Add AvgDRDiff column to both datasets
+train$AvgDRDiff <- train$AvgDR.x - train$AvgDR.y
+test$AvgDRDiff <- test$AvgDR.x - test$AvgDR.y
+
+# Add AvgAstDiff column to both datasets
+train$AvgAstDiff <- train$AvgAst.x - train$AvgAst.y
+test$AvgAstDiff <- test$AvgAst.x - test$AvgAst.y
+
+# Add AvgTODiff column to both datasets
+train$AvgTODiff <- train$AvgTO.x - train$AvgTO.y
+test$AvgTODiff <- test$AvgTO.x - test$AvgTO.y
+
+# Add AvgStlDiff column to both datasets
+train$AvgStlDiff <- train$AvgStl.x - train$AvgStl.y
+test$AvgStlDiff <- test$AvgStl.x - test$AvgStl.y
+
+# Add AvgBlkDiff column to both datasets
+train$AvgBlkDiff <- train$AvgBlk.x - train$AvgBlk.y
+test$AvgBlkDiff <- test$AvgBlk.x - test$AvgBlk.y
+
+# Add AvgPFDiff column to both datasets
+train$AvgPFDiff <- train$AvgPF.x - train$AvgPF.y
+test$AvgPFDiff <- test$AvgPF.x - test$AvgPF.y
+
+# Remove .x and .y columns (will be using Diff columns for Logistic Regression)
+train <- train[, c(4, 5, 76:100, 6, 41)]
+test <- test[, c(4, 5, 76:100, 6, 41)]
+str(test)
+```
+
+### Perform Logistic Regression v5 -- Using only SeedDiff
+```{r}
+train_spark <- as.DataFrame(train)
+test_spark <- as.DataFrame(test)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_spark, Result ~ SeedDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test$Pred <- pred_spark
+test$PredRounded <- ifelse(test$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test$Pred <- ifelse(test$Pred > 0.999, 0.999, test$Pred)
+test$Pred <- ifelse(test$Pred < 0.001, 0.001, test$Pred)
+```
+
+### Finalize results, export to .csv
+```{r}
+# Write winning percentage with team names (makes it easier for creating bracket)
+test$forBracket <- paste(round(test$Pred * 100, 2), "% chance that ", test$TeamName.x, " beats ", test$TeamName.y, sep = "")
+  
+# Export predictions to csv
+write.csv(test[, c(1:2)], file = "submission_v1.csv", row.names = FALSE)
+write.csv(test[, c(1:2, 31)], file = "submission_v1_forBracket.csv", row.names = FALSE)
+```
+
+### Perform Logistic Regression v6 -- Using multiple features with interaction effects
+```{r}
+train_spark <- as.DataFrame(train)
+test_spark <- as.DataFrame(test)
+
+# Logistic Regression Model
+fit_spark <- spark.logit(train_spark, Result ~ SeedDiff + NeutralWinsDiff + SeedDiff:WinsDiff:NeutralWinsDiff + SeedDiff:LossesDiff:NeutralWinsDiff + CurrCoachYearsDiff:LossesDiff:NeutralWinsDiff, regParam = 0.3)
+summary(fit_spark)
+
+# Predicted values from test set
+pred_spark <- predict(fit_spark, test_spark)
+pred_spark <- as.data.frame(pred_spark)
+pred_spark <- t(apply(pred_spark, 1, FUN = function(df) {
+    x <- SparkR:::callJMethod(df$probability, "apply", as.integer(0))
+    y <- SparkR:::callJMethod(df$probability, "apply", as.integer(1))
+    c(x, y)
+}))[, 1]
+test$Pred <- pred_spark
+test$PredRounded <- ifelse(test$Pred > 0.5, 1, 0)
+
+# Round extreme values to prevent high log loss
+test$Pred <- ifelse(test$Pred > 0.999, 0.999, test$Pred)
+test$Pred <- ifelse(test$Pred < 0.001, 0.001, test$Pred)
+```
+
+### Finalize results, export to .csv
+```{r}
+# Write winning percentage with team names (makes it easier for creating bracket)
+test$forBracket <- paste(round(test$Pred * 100, 2), "% chance that ", test$TeamName.x, " beats ", test$TeamName.y, sep = "")
+  
+# Export predictions to csv
+write.csv(test[, c(1:2)], file = "submission_v2.csv", row.names = FALSE)
+write.csv(test[, c(1:2, 31)], file = "submission_v2_forBracket.csv", row.names = FALSE)
+```
