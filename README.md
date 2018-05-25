@@ -1,6 +1,8 @@
 # March Madness 2018
 Prediction of March Madness 2018 Men's Tournament
 
+The detailed project report can be viewed [here](http://bierman.io/report.pdf).
+
 ## Installation Instructions
 1.  Install [Apache Spark](https://spark.apache.org/) and [Apache Hadoop](http://hadoop.apache.org/)
 2.  Download and install [R v3.4.3](https://cran.rstudio.com)
